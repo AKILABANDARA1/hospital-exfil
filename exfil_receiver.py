@@ -1,7 +1,8 @@
 import os
 import time
 import json
-from fastapi import FastAPI, File, UploadFile, Form
+import logging
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import HTMLResponse
 from threading import Lock
 
@@ -9,7 +10,13 @@ app = FastAPI()
 
 UPLOAD_DIR = "/data/uploads"
 LOG_FILE = "/data/received_files.jsonl"
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("exfil_receiver")
+
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 
 received_files = {}
 total_bytes = 0
@@ -21,13 +28,16 @@ def load_logs():
         return
     with open(LOG_FILE, "r") as f:
         for line in f:
-            entry = json.loads(line)
-            filename = entry["filename"]
-            received_files[filename] = {
-                "size": entry["size"],
-                "timestamp": entry["timestamp"]
-            }
-            total_bytes += entry["size"]
+            try:
+                entry = json.loads(line)
+                filename = entry["filename"]
+                received_files[filename] = {
+                    "size": entry["size"],
+                    "timestamp": entry["timestamp"]
+                }
+                total_bytes += entry["size"]
+            except Exception as e:
+                logger.error(f"Error parsing log line: {e}")
 
 def append_log(entry):
     with open(LOG_FILE, "a") as f:
@@ -35,25 +45,36 @@ def append_log(entry):
 
 @app.on_event("startup")
 def startup_event():
+    logger.info("Loading previous logs...")
     load_logs()
+    logger.info(f"Loaded {len(received_files)} previous files, total {total_bytes} bytes")
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...), filename: str = Form(...)):
+async def upload_file(file: UploadFile = File(...)):
     global total_bytes
-    content = await file.read()
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    with open(filepath, "wb") as f:
-        f.write(content)
+    filename = file.filename
+    if not filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
 
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    entry = {"filename": filename, "size": len(content), "timestamp": timestamp}
+    try:
+        content = await file.read()
+        filepath = os.path.join(UPLOAD_DIR, filename)
+        with open(filepath, "wb") as f:
+            f.write(content)
 
-    with lock:
-        received_files[filename] = {"size": len(content), "timestamp": timestamp}
-        total_bytes += len(content)
-        append_log(entry)
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        entry = {"filename": filename, "size": len(content), "timestamp": timestamp}
 
-    return {"status": "file received", "filename": filename, "size": len(content)}
+        with lock:
+            received_files[filename] = {"size": len(content), "timestamp": timestamp}
+            total_bytes += len(content)
+            append_log(entry)
+
+        logger.info(f"Received and saved file: {filename} ({len(content)} bytes)")
+        return {"status": "file received", "filename": filename, "size": len(content)}
+    except Exception as e:
+        logger.error(f"Failed to save file {filename}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save file")
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
@@ -122,3 +143,7 @@ def dashboard():
     </html>
     """
     return html
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
