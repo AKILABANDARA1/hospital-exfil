@@ -1,15 +1,14 @@
 import os
 import time
 import json
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse
 from threading import Lock
 
 app = FastAPI()
 
-UPLOAD_DIR = "/data/uploads"
-LOG_FILE = "/data/received_files.jsonl"
-
+UPLOAD_DIR = "/tmp/uploads"  # ✅ Choreo-compatible writeable directory
+LOG_FILE = "/tmp/received_files.jsonl"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 received_files = {}
@@ -39,27 +38,25 @@ def startup_event():
     load_logs()
 
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), filename: str = Form(...)):
     global total_bytes
-    filename = file.filename
-    content = await file.read()
-
-    filepath = os.path.join(UPLOAD_DIR, filename)
     try:
+        content = await file.read()
+        filepath = os.path.join(UPLOAD_DIR, filename)
         with open(filepath, "wb") as f:
             f.write(content)
+
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        entry = {"filename": filename, "size": len(content), "timestamp": timestamp}
+
+        with lock:
+            received_files[filename] = {"size": len(content), "timestamp": timestamp}
+            total_bytes += len(content)
+            append_log(entry)
+
+        return {"status": "file received", "filename": filename, "size": len(content)}
     except Exception as e:
-        return {"detail": f"Failed to save file: {str(e)}"}
-
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    entry = {"filename": filename, "size": len(content), "timestamp": timestamp}
-
-    with lock:
-        received_files[filename] = {"size": len(content), "timestamp": timestamp}
-        total_bytes += len(content)
-        append_log(entry)
-
-    return {"status": "file received", "filename": filename, "size": len(content)}
+        return {"detail": f"Failed to save file: {e}"}
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
