@@ -19,4 +19,4 @@ USER 10001
 
 EXPOSE 8080
 
-CMD ["uvicorn", "exfil_receiver:app", "--host", "0.0.0.0", "--port", "80"]
+CMD ["uvicorn", "exfil_receiver:app", "--host", "0.0.0.0", "--port", "8080"]
